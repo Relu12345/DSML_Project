@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Chess datasets and models
+*.pgn.zst
+*.pgn
+*.npy
+*.h5
+
 # C extensions
 *.so
 
