@@ -1,0 +1,4 @@
+chess==1.11.1
+matplotlib==3.9.3
+pandas==2.2.3
+Pillow==11.0.0
