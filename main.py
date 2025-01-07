@@ -210,6 +210,7 @@ def main():
     # Visualize each game in sequence
     for game_id, game in enumerate(games, 1):
         print(f"Visualizing game {game_id}...")
+        print("Game details:\n", game)
 
         # Initialize Tkinter GUI
         chess_gui = ChessGUI(tk.Tk(), game)

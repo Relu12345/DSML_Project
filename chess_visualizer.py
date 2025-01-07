@@ -26,12 +26,15 @@ class ChessGUI:
         self.next_button = tk.Button(control_frame, text="Next >>", command=self.next_move)
         self.next_button.pack(side=tk.LEFT, padx=10)
 
+        self.best_move_button = tk.Button(control_frame, text="Show Best Move", command=self.show_best_move)
+        self.best_move_button.pack(side=tk.LEFT, padx=10)
+
         # Create the current move label
         self.current_move_label = tk.Label(control_frame, text="Start of game", font=('Arial', 14))
         self.current_move_label.pack(side=tk.LEFT, padx=10)
 
         # Create the chessboard canvas
-        self.canvas = tk.Canvas(self.root, width=480, height=480)  # Adjust size for 60x60 squares
+        self.canvas = tk.Canvas(self.root, width=520, height=520)  # Adjust size for 60x60 squares
         self.canvas.pack(pady=10)
 
         # Initial display
@@ -73,42 +76,82 @@ class ChessGUI:
 
     def update_current_move(self):
         """Update the current move label with the move details."""
-        move_number = self.move_index  # Move number starts from 1
-        if self.move_index % 2 == 1:
-            # White's turn (even index)
-            player = "White"
-        else:
-            # Black's turn (odd index)
-            player = "Black"
-
-        # Update the label text to show the current move and player
-        if move_number == 0:
+        if self.move_index == 0:
             self.current_move_label.config(text="Start of game")
         else:
-            self.current_move_label.config(text=f"Move {move_number}: {player}")
+            # Create a temporary board to get the correct move notation
+            temp_board = chess.Board()
+            # Apply all moves up to the current index
+            for i in range(self.move_index - 1):
+                temp_board.push(self.moves[i])
+            
+            move = self.moves[self.move_index - 1]
+            move_san = temp_board.san(move)  # Get move in algebraic notation
+            player = "White" if (self.move_index % 2 == 1) else "Black"
+            self.current_move_label.config(text=f"Move {self.move_index}: {player} ({move_san})")
+
+    def get_best_move(self):
+        """Get Stockfish's best move recommendation for current position"""
+        engine = chess.engine.SimpleEngine.popen_uci("stockfish/stockfish-windows-x86-64-avx2.exe")
+        result = engine.play(self.board, chess.engine.Limit(time=2.0))
+        best_move = result.move
+        engine.quit()
+        return best_move
+
+    def show_best_move(self):
+        """Display the best move in the current position"""
+        best_move = self.get_best_move()
+        # Convert move to algebraic notation for display
+        best_move_san = self.board.san(best_move)
+        self.current_move_label.config(text=f"Best move: {best_move_san}")
 
     def render_board_image(self, board):
-        """Render the chessboard to an image."""
+        """Render the chessboard to an image with notation labels."""
         square_size = 60
-        img = Image.new("RGBA", (8 * square_size, 8 * square_size), color=(255, 255, 255, 0))  # Transparent background
+        margin = 20  # Space for labels
+        total_size = 8 * square_size + 2 * margin
+        img = Image.new("RGBA", (total_size, total_size), color=(255, 255, 255, 0))
 
         # Draw the chessboard squares
         for row in range(8):
             for col in range(8):
-                color = (255, 255, 255) if (row + col) % 2 == 0 else (169, 169, 169)  # White and Gray squares
+                color = (255, 255, 255) if (row + col) % 2 == 0 else (169, 169, 169)
                 for i in range(square_size):
                     for j in range(square_size):
-                        img.putpixel((col * square_size + i, row * square_size + j), color)
+                        img.putpixel((col * square_size + margin + i, row * square_size + margin + j), color)
 
         # Draw the pieces
         for row in range(8):
             for col in range(8):
-                piece = board.piece_at(chess.square(col, 7 - row))  # Convert to chess square
+                piece = board.piece_at(chess.square(col, 7 - row))
                 if piece:
                     piece_image = self.load_piece_image(piece.symbol())
                     if piece_image:
-                        # Paste the piece image onto the board at the correct location
-                        img.paste(piece_image, (col * square_size, row * square_size), piece_image)  # Use alpha channel as mask
+                        img.paste(piece_image, (col * square_size + margin, row * square_size + margin), piece_image)
+
+        # Create a drawing context
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(img)
+        
+        # Add file letters (a-h)
+        for col in range(8):
+            letter = chr(ord('a') + col)
+            # Bottom letters
+            draw.text((col * square_size + margin + 25, total_size - margin + 5), 
+                    letter, fill=(0, 0, 0))
+            # Top letters
+            draw.text((col * square_size + margin + 25, 5), 
+                    letter, fill=(0, 0, 0))
+
+        # Add rank numbers (1-8)
+        for row in range(8):
+            number = str(8 - row)
+            # Left numbers
+            draw.text((5, row * square_size + margin + 25), 
+                    number, fill=(0, 0, 0))
+            # Right numbers
+            draw.text((total_size - margin + 5, row * square_size + margin + 25), 
+                    number, fill=(0, 0, 0))
 
         return img
 
