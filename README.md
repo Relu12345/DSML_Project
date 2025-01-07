@@ -27,6 +27,6 @@ pip install -r requirements.txt
    - Dezarhivati fisierul, ruland `decompress_dataset.py`
 
 4. Instalati Stockfish:
-   - Descarcati binaries Stockfish de aici: 
+   - Descarcati binaries Stockfish de aici: https://github.com/official-stockfish/Stockfish/releases/latest/download/stockfish-windows-x86-64-avx2.zip
    - Extrageti arhiva in directorul root al proiectului
    - Asigurati-va ca aveti un folder `stockfish` in directorul root
