@@ -9,6 +9,9 @@ __pycache__/
 *.npy
 *.h5
 
+# Chess evaluations csv
+chess_evaluations.csv
+
 # C extensions
 *.so
 

@@ -1,3 +1,4 @@
+import math
 import chess
 import chess.pgn
 import chess.engine
@@ -54,15 +55,50 @@ def evaluate_game_with_stockfish(game, stockfish_path):
     engine.quit()
     return pd.DataFrame(evaluations)
 
+def calculate_game_entropy(game):
+    """Calculate entropy (logarithm of possible moves) for each position in the game."""
+    entropies = []
+    board = game.board()
+    
+    for move in game.mainline_moves():
+        # Get all legal moves in current position
+        legal_moves_count = len(list(board.legal_moves))
+        
+        # Calculate entropy using natural logarithm
+        # Add 1 to avoid log(0) for positions with only one move
+        entropy = math.log(legal_moves_count + 1)
+        
+        entropies.append({
+            "move": move.uci(),
+            "legal_moves": legal_moves_count,
+            "entropy": entropy
+        })
+        
+        # Make the move on the board
+        board.push(move)
+    
+    return pd.DataFrame(entropies)
+
 def process_games(games, stockfish_path):
     """Process a list of games with Stockfish and return a consolidated dataset."""
     all_evaluations = []
     for i, game in enumerate(games):
         print(f"Processing game {i + 1}/{len(games)}")
         game_evaluations = evaluate_game_with_stockfish(game, stockfish_path)
+        game_entropy = calculate_game_entropy(game)
+        
+        # Add game identifier
         game_evaluations["game_id"] = i + 1
+        game_entropy["game_id"] = i + 1
+        
+        # Add move numbers
         game_evaluations["move_number"] = range(1, len(game_evaluations) + 1)
-        all_evaluations.append(game_evaluations)
+        game_entropy["move_number"] = range(1, len(game_entropy) + 1)
+        
+        # Merge evaluations with entropy data
+        game_data = pd.merge(game_evaluations, game_entropy, on=["move_number", "game_id", "move"])
+        all_evaluations.append(game_data)
+        
     return pd.concat(all_evaluations, ignore_index=True)
 
 # Step 2: Visualization
