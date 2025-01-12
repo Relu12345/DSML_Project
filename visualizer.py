@@ -191,61 +191,74 @@ class ScrollableFrame(tk.Frame):
 
 class ChessMoveEvaluator:
     """
-    Shows:
-      - A scrollable left area with 3 rows:
-          1) Real Game Move
-          2) Stockfish Best Move
-          3) Your Move (with a text field for the user's SAN move)
-        Each row has Before/After boards plus Grade & Entropy labels to the right.
-      - On the right side, a Plot dropdown and a Matplotlib figure
-      - Navigation buttons for Next/Prev (to move through the moves)
-      - Also "Prev Game" / "Next Game" to switch among multiple games
-      - A title label for the game (White vs Black, date/time)
+    - Shows 3 rows of boards: Real, Stockfish, User.
+      Each calculates distinct entropies from the AFTER position of that move.
+    - If user calculates a SAN move, we compute the user move's AFTER position entropy 
+      and place a red dot on the Entropy plot.
     """
 
     def __init__(self, root, games, stockfish_path):
-        """
-        :param root: the Tk root
-        :param games: a list of chess.pgn.Game
-        :param stockfish_path: path to Stockfish engine
-        """
         self.root = root
         self.root.title("Chess Move Evaluator")
-        # 1200 wide so we have enough space on the right
         self.root.geometry("1200x900")
 
         self.games = games
         self.stockfish_path = stockfish_path
         self.current_game_index = 0
 
-        # We'll precompute evaluations for each game
-        self.game_data = []  # list of (game, df_eval)
-
+        # We'll store (game, df_evals) in game_data
+        self.game_data = []
         for gm in self.games:
             df = self._evaluate_game_and_build_df(gm)
             self.game_data.append((gm, df))
 
-        # UI top frame for "Prev Game" / "Next Game" and game title
-        top_frame = tk.Frame(self.root)
-        top_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        # Keep track of user moves' entropies (for plotting as red dots).
+        self.user_moves_entropy_data = []
 
-        self.prev_game_btn = tk.Button(top_frame, text="<< Prev Game", command=self.prev_game)
+        #######################################################################
+        # 1) TOP FRAME: Title
+        #######################################################################
+        top_title_frame = tk.Frame(self.root)
+        top_title_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+
+        self.game_title_label = tk.Label(top_title_frame, text="Game Title", font=("Arial", 16, "bold"))
+        self.game_title_label.pack(side=tk.TOP, pady=(0,5))
+
+        #######################################################################
+        # 2) SUB-FRAME FOR GAME & MOVE BUTTONS (UNDER TITLE)
+        #######################################################################
+        nav_game_move_frame = tk.Frame(top_title_frame)
+        nav_game_move_frame.pack(side=tk.TOP, fill=tk.X)
+
+        # Prev Game / Next Game
+        self.prev_game_btn = tk.Button(nav_game_move_frame, text="<< Prev Game", command=self.prev_game)
         self.prev_game_btn.pack(side=tk.LEFT, padx=5)
 
-        self.next_game_btn = tk.Button(top_frame, text="Next Game >>", command=self.next_game)
+        self.next_game_btn = tk.Button(nav_game_move_frame, text="Next Game >>", command=self.next_game)
         self.next_game_btn.pack(side=tk.LEFT, padx=5)
 
-        self.game_title_label = tk.Label(top_frame, text="Game Title", font=("Arial", 14, "bold"))
-        self.game_title_label.pack(side=tk.LEFT, padx=20)
+        # Prev Move / Next Move
+        self.prev_move_btn = tk.Button(nav_game_move_frame, text="<< Prev Move", command=self.prev_move)
+        self.prev_move_btn.pack(side=tk.LEFT, padx=5)
 
-        # The main frames: left = boards, right = plot
+        self.next_move_btn = tk.Button(nav_game_move_frame, text="Next Move >>", command=self.next_move)
+        self.next_move_btn.pack(side=tk.LEFT, padx=5)
+
+        # Move # field
+        self.move_num_var = tk.IntVar(value=1)
+        tk.Label(nav_game_move_frame, text="Move #:").pack(side=tk.LEFT, padx=(10,0))
+        self.move_num_entry = tk.Entry(nav_game_move_frame, width=4, textvariable=self.move_num_var)
+        self.move_num_entry.pack(side=tk.LEFT, padx=5)
+
+        self.go_button = tk.Button(nav_game_move_frame, text="Go", command=self.go_to_move)
+        self.go_button.pack(side=tk.LEFT, padx=5)
+
+        #######################################################################
+        # 3) LEFT: SCROLLABLE (3 rows)
+        #######################################################################
         self.scroll_frame = ScrollableFrame(self.root)
         self.scroll_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        right_frame = tk.Frame(self.root, padx=10, pady=10)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-
-        # The three rows inside scroll_frame
         self.real_move_row = self.add_move_section(
             parent=self.scroll_frame.scrollable_frame,
             label_text="Real Game Move",
@@ -262,11 +275,18 @@ class ChessMoveEvaluator:
             show_user_input=True
         )
 
-        # On the right: Plot dropdown & Matplotlib figure
+        #######################################################################
+        # 4) RIGHT: Plot area
+        #######################################################################
+        right_frame = tk.Frame(self.root, padx=10, pady=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
         tk.Label(right_frame, text="Select Plot:", font=("Arial", 14)).grid(row=0, column=0, sticky="w")
-        self.plot_dropdown = ttk.Combobox(right_frame, 
-                                          values=["Evaluation Over Time", "Entropy Trends"], 
-                                          state="readonly")
+        self.plot_dropdown = ttk.Combobox(
+            right_frame, 
+            values=["Evaluation Over Time", "Entropy Trends"], 
+            state="readonly"
+        )
         self.plot_dropdown.grid(row=0, column=1, sticky="w")
         self.plot_dropdown.set("Select Plot")
         self.plot_dropdown.bind("<<ComboboxSelected>>", self.update_plot)
@@ -275,30 +295,20 @@ class ChessMoveEvaluator:
         self.mpl_canvas = FigureCanvasTkAgg(self.figure, master=right_frame)
         self.mpl_canvas.get_tk_widget().grid(row=1, column=0, columnspan=2, pady=10)
 
-        # Navigation for moves
-        nav_frame = tk.Frame(right_frame)
-        nav_frame.grid(row=2, column=0, columnspan=2, pady=15)
-        tk.Button(nav_frame, text="<< Prev Move", command=self.prev_move).pack(side=tk.LEFT, padx=5)
-        tk.Button(nav_frame, text="Next Move >>", command=self.next_move).pack(side=tk.LEFT, padx=5)
-
-        # Start by loading the first game
-        self.load_game(self.current_game_index)
+        # Load the first game
+        self.load_game(0)
 
     def _evaluate_game_and_build_df(self, game):
-        """
-        Evaluate 'game' with stockfish, compute a DataFrame with evals + entropies.
-        """
         evals = evaluate_game_with_stockfish(game, self.stockfish_path, depth=15)
         entropies = calculate_entropy_for_game(game)
         df = pd.DataFrame(evals)
         df["entropy"] = entropies
         return df
 
+    ###########################################################################
+    #                            GAME LOADING                                  #
+    ###########################################################################
     def load_game(self, idx):
-        """
-        Load the game at index 'idx' into the UI.
-        We reset the move index to -1 (start of game).
-        """
         if idx < 0 or idx >= len(self.games):
             return
 
@@ -307,12 +317,11 @@ class ChessMoveEvaluator:
         self.all_moves = list(self.game.mainline_moves())
         self.current_move_index = 0
 
-        # Show a nice title
-        self.show_game_title()
+        # Reset user moves so old user entropies don't carry over to a new game
+        self.user_moves_entropy_data = []
 
-        # Initialize boards
+        self.show_game_title()
         self.initialize_chess_boards()
-        # Then do an initial update (so user sees the start position)
         self.update_all_boards()
 
     def prev_game(self):
@@ -324,38 +333,52 @@ class ChessMoveEvaluator:
             self.load_game(self.current_game_index + 1)
 
     def show_game_title(self):
-        """
-        Show something like: "WhiteName vs BlackName - 2023.04.01 13:00:00"
-        based on PGN headers, if they exist.
-        """
         headers = self.game.headers
         white = headers.get("White", "Unknown")
         black = headers.get("Black", "Unknown")
         date = headers.get("UTCDate", "")
         time = headers.get("UTCTime", "")
         title_text = f"{white} vs {black} - {date} {time}"
-
         self.game_title_label.config(text=title_text)
 
     ###########################################################################
-    #                          ROW CREATION / UI                              #
+    #                          MOVE NAVIGATION                                #
+    ###########################################################################
+    def prev_move(self):
+        if self.current_move_index > 0:
+            self.current_move_index -= 1
+            self.update_all_boards()
+            self.move_num_var.set(self.current_move_index + 1)
+
+    def next_move(self):
+        if self.current_move_index < len(self.all_moves):
+            self.current_move_index += 1
+            # clamp if we exceed
+            if self.current_move_index > len(self.all_moves):
+                self.current_move_index = len(self.all_moves)
+            self.update_all_boards()
+            self.move_num_var.set(self.current_move_index + 1)
+
+    def go_to_move(self):
+        requested_move = self.move_num_var.get()
+        if requested_move < 1:
+            requested_move = 1
+        if requested_move > len(self.all_moves):
+            requested_move = len(self.all_moves)
+
+        self.current_move_index = requested_move - 1
+        self.update_all_boards()
+        self.move_num_var.set(requested_move)
+
+    ###########################################################################
+    #                             ROW CREATION                                #
     ###########################################################################
     def add_move_section(self, parent, label_text, show_user_input=False):
-        """
-        Creates a row with:
-          - A label (e.g., "Real Game Move")
-          - Before canvas, After canvas
-          - Grade label, Entropy label to the right
-          - If show_user_input=True, add a text entry & button below for SAN moves
-        Returns a dictionary of the created widgets.
-        """
         section_frame = tk.Frame(parent, pady=10)
         section_frame.pack(fill=tk.X, expand=True)
 
-        # Title
         tk.Label(section_frame, text=label_text, font=("Arial", 16)).pack(anchor="w")
 
-        # Row for boards + grade/entropy
         boards_frame = tk.Frame(section_frame)
         boards_frame.pack(fill=tk.X, expand=True)
 
@@ -405,9 +428,6 @@ class ChessMoveEvaluator:
         }
 
     def initialize_chess_boards(self):
-        """
-        Display placeholder text on boards (before any moves).
-        """
         for row in (self.real_move_row, self.sf_move_row, self.user_move_row):
             row["before_canvas"].delete("all")
             row["before_canvas"].create_text(
@@ -425,160 +445,105 @@ class ChessMoveEvaluator:
         img_pil = render_board_image(board)
         img_tk = ImageTk.PhotoImage(img_pil)
         canvas.create_image(0, 0, anchor=tk.NW, image=img_tk)
-        canvas.image = img_tk  # keep ref
+        canvas.image = img_tk
 
     ###########################################################################
-    #                 NEXT/PREV MOVE + BOARD UPDATING LOGIC                   #
+    #                      UPDATE ALL 3 BOARDS FOR CURRENT MOVE               #
     ###########################################################################
-
-    def next_move(self):
-        if self.current_move_index < len(self.all_moves) - 1:
-            self.current_move_index += 1
-            self.update_all_boards()
-
-    def prev_move(self):
-        if self.current_move_index >= 0:
-            self.current_move_index -= 1
-            self.update_all_boards()
-
     def update_all_boards(self):
-        """
-        Rebuild boards for:
-          1) Real Game Move
-          2) Stockfish Best Move
-          3) "Your Move"
-        Then update Grade & Entropy for each row.
-        """
-
-        # --------------------------
-        # REAL GAME MOVE
-        # --------------------------
+        # 1) Identify the position "before" the real move
         real_before_board = self.game.board()
-        for m in self.all_moves[:self.current_move_index]:
+        for m in self.all_moves[: self.current_move_index]:
             real_before_board.push(m)
 
-
+        # Build the "after" board for the real move
         real_after_board = real_before_board.copy()
         real_move = None
-        if self.current_move_index >= 0:
+        if 0 <= self.current_move_index < len(self.all_moves):
             real_move = self.all_moves[self.current_move_index]
             real_after_board.push(real_move)
 
-        # Draw boards
+        # 2) Real Boards
         self.draw_board_on_canvas(self.real_move_row["before_canvas"], real_before_board)
         self.draw_board_on_canvas(self.real_move_row["after_canvas"], real_after_board)
 
-        # Evaluate real move vs best
+        # Evaluate Real Move Grade
         real_eval, best_eval = self._compare_real_vs_best(real_before_board, real_move)
-        # Grade for Real row = (real_eval - best_eval)
         real_grade = real_eval - best_eval
-        real_entropy = self._calculate_entropy(real_before_board)
+        # Entropy from the AFTER position of the real move
+        real_entropy = self._calculate_entropy(real_after_board)
+
         self.real_move_row["grade_label"].config(text=f"{real_grade:.2f}")
         self.real_move_row["entropy_label"].config(text=f"{real_entropy:.2f}")
 
-        # --------------------------
-        # STOCKFISH BEST MOVE
-        # --------------------------
+        # 3) Stockfish Boards
         sf_before_board = real_before_board.copy()
         sf_best_move = get_stockfish_best_move(sf_before_board, self.stockfish_path) if sf_before_board is not None else None
         sf_after_board = sf_before_board.copy()
-        if sf_best_move is not None:
+        if sf_best_move:
             sf_after_board.push(sf_best_move)
 
         self.draw_board_on_canvas(self.sf_move_row["before_canvas"], sf_before_board)
         self.draw_board_on_canvas(self.sf_move_row["after_canvas"], sf_after_board)
 
-        # Evaluate best move vs real
-        # (Now best_eval - real_eval for "Stockfish row" to show how much better the best move is)
-        sf_eval, best_eval_2 = self._compare_real_vs_best(sf_before_board, sf_best_move)
-        # But note _compare_real_vs_best returns (eval_of_that_move, eval_of_best_move).
-        # If 'that_move' is the best move, then "that_move_eval" ~ best_eval, 
-        #  and "eval_of_best_move" is the best-of-the-best (which might be the same move).
-        # We'll do a simpler approach: we also evaluate the real move from the same position:
-        # Then "Stockfish grade" = (best_eval - real_eval).
-        real_eval_from_sfpos, best_eval_from_sfpos = self._compare_real_vs_best(sf_before_board, real_move)
+        # Evaluate Stockfish Move Grade
+        # We treat stockfish's "that move" as sf_best_move
+        sf_eval, best_eval2 = self._compare_real_vs_best(sf_before_board, sf_best_move)
+        # We'll attempt to compare it with the real move from the same position, but 
+        # as a simpler approach: we define stockfish grade = (sf_eval - real_eval_sfpos).
+        # For now let's do: "stockfish grade = sf_eval - real_eval"
+        # so if sf_eval is bigger, SF is better
+        real_eval_sfpos = 0.0
+        if real_move and real_move in sf_before_board.legal_moves:
+            tmp2 = sf_before_board.copy()
+            tmp2.push(real_move)
+            real_eval_sfpos = self._evaluate_position(tmp2)
 
-        # Actually, we want the real eval from the same position as 'sf_before_board'.
-        # If 'real_move' is not possible from 'sf_before_board' in the same state, we do a quick approach:
-        if real_move is not None:
-            temp2 = sf_before_board.copy()
-            if real_move in temp2.legal_moves:
-                temp2.push(real_move)
-                real_eval_sfpos = self._evaluate_position(temp2)
-            else:
-                # If the real move can't be played from this position, just 0
-                real_eval_sfpos = 0.0
-        else:
-            real_eval_sfpos = 0.0
+        sf_grade = sf_eval - real_eval_sfpos
+        # Entropy from the AFTER position of stockfish's move
+        sf_entropy = self._calculate_entropy(sf_after_board)
 
-        # Evaluate the SF move
-        if sf_best_move is not None:
-            temp3 = sf_before_board.copy()
-            temp3.push(sf_best_move)
-            best_eval_sfpos = self._evaluate_position(temp3)
-        else:
-            best_eval_sfpos = 0.0
-
-        # Now Stockfish row "Grade" = (best_eval - real_eval)
-        # from the same position. 
-        sf_grade = best_eval_sfpos - real_eval_sfpos
-        sf_entropy = self._calculate_entropy(sf_before_board)
         self.sf_move_row["grade_label"].config(text=f"{sf_grade:.2f}")
         self.sf_move_row["entropy_label"].config(text=f"{sf_entropy:.2f}")
 
-        # --------------------------
-        # USER MOVE
-        # --------------------------
-        # Start user board from the real_before_board
-        self.user_board = real_before_board.copy()
+        # 4) User boards
+        #   - We do not push anything yet; user will push in on_user_move_calculate
+        self.user_board = real_before_board.copy()  # "before" the user move
+        user_after_board = self.user_board.copy()
 
-        user_after_board = self.user_board.copy()  # no user move yet
         self.draw_board_on_canvas(self.user_move_row["before_canvas"], self.user_board)
         self.draw_board_on_canvas(self.user_move_row["after_canvas"], user_after_board)
-
-        # Reset user row grade/entropy
+        # For now, grade = 0, entropy = 0 (until user actually makes a move)
         self.user_move_row["grade_label"].config(text="0.00")
         self.user_move_row["entropy_label"].config(text="0.00")
 
-        # If a plot is selected, update it
+        # If the user has selected a plot, refresh it
         if self.plot_dropdown.get() != "Select Plot":
             self.update_plot(None)
 
-    ###########################################################################
-    #                      REAL vs BEST EVALUATION HELPERS                    #
-    ###########################################################################
     def _compare_real_vs_best(self, board_before, move):
         """
-        Evaluate 'move' from 'board_before' (return that_move_eval) 
-        and also evaluate the best move from board_before (return best_move_eval).
-        Returns (that_move_eval, best_move_eval) from White's perspective.
+        Evaluate 'move' from board_before => move_eval,
+        Evaluate best move from same board => best_eval,
+        return (move_eval, best_eval).
         """
-        # Evaluate the move in question
-        if move is None:
-            that_move_eval = 0.0
+        if move and move in board_before.legal_moves:
+            temp = board_before.copy()
+            temp.push(move)
+            move_eval = self._evaluate_position(temp)
         else:
-            temp_board = board_before.copy()
-            if move in temp_board.legal_moves:
-                temp_board.push(move)
-                that_move_eval = self._evaluate_position(temp_board)
-            else:
-                # If the move is not legal from that position, 0
-                that_move_eval = 0.0
+            move_eval = 0.0
 
-        # Evaluate the best move
-        best_move = get_stockfish_best_move(board_before, self.stockfish_path)
+        best_m = get_stockfish_best_move(board_before, self.stockfish_path)
         best_eval = 0.0
-        if best_move is not None:
+        if best_m:
             temp2 = board_before.copy()
-            temp2.push(best_move)
+            temp2.push(best_m)
             best_eval = self._evaluate_position(temp2)
 
-        return (that_move_eval, best_eval)
+        return move_eval, best_eval
 
     def _evaluate_position(self, board, depth=15):
-        """
-        Evaluate position with Stockfish, return White's numeric eval.
-        """
         engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
         info = engine.analyse(board, limit=chess.engine.Limit(depth=depth))
         w_eval = info["score"].white().score(mate_score=10000)
@@ -589,48 +554,49 @@ class ChessMoveEvaluator:
         return math.log(len(list(board.legal_moves)) + 1)
 
     ###########################################################################
-    #                  USER MOVE CALCULATION (SAN Input)                      #
+    #                  USER MOVE (SAN) CALCULATION + DOT ON PLOT             #
     ###########################################################################
     def on_user_move_calculate(self, notation_entry, before_canvas, after_canvas, grade_label, entropy_label):
-        """
-        Called when the user clicks "Calculate" in the "Your Move" row.
-        - We parse the SAN move from the user input
-        - We push it onto self.user_board
-        - We update the "after" board, and recalc Grade & Entropy
-        """
         move_text = notation_entry.get().strip()
         if not move_text:
             return
 
         try:
+            # 1) push the user's move onto self.user_board => user_after
             user_move = self.user_board.parse_san(move_text)
-            # BEFORE board is self.user_board
             user_after = self.user_board.copy()
             user_after.push(user_move)
 
-            # Draw the after board
+            # 2) Draw the after board
             self.draw_board_on_canvas(after_canvas, user_after)
 
-            # Evaluate user's move vs best
-            user_eval, best_eval = self._compare_real_vs_best(self.user_board, user_move)
-            user_grade = user_eval - best_eval
-            user_entropy = self._calculate_entropy(self.user_board)
+            # 3) Evaluate user grade
+            move_eval, best_eval = self._compare_real_vs_best(self.user_board, user_move)
+            user_grade = move_eval - best_eval
+
+            # 4) Entropy from the AFTER position of the user move
+            user_entropy = self._calculate_entropy(user_after)
 
             grade_label.config(text=f"{user_grade:.2f}")
             entropy_label.config(text=f"{user_entropy:.2f}")
+
+            # 5) Add a red dot on the "Entropy Trends" plot
+            # x = self.current_move_index + 1 ( or any other index)
+            x_val = self.current_move_index + 1
+            self.user_moves_entropy_data.append((x_val, user_entropy))
+
+            # Force a re-plot if "Entropy Trends" is selected
+            if self.plot_dropdown.get() != "Select Plot":
+                self.update_plot(None)
 
         except Exception as e:
             notation_entry.delete(0, tk.END)
             notation_entry.insert(0, "Invalid move")
 
     ###########################################################################
-    #                           PLOTTING METHODS                              #
+    #                          PLOTTING METHODS                               #
     ###########################################################################
     def update_plot(self, event):
-        """
-        Draw the chosen plot (Evaluation Over Time or Entropy Trends)
-        from self.evals_df for the current game.
-        """
         plot_type = self.plot_dropdown.get()
         self.figure.clear()
         ax = self.figure.add_subplot(111)
@@ -641,13 +607,22 @@ class ChessMoveEvaluator:
             ax.set_title("Evaluation Over Time")
             ax.set_xlabel("Move Number")
             ax.set_ylabel("Eval (White/Black)")
+            ax.legend()
+
         elif plot_type == "Entropy Trends":
+            # Original game entropies
             ax.plot(self.evals_df.index + 1, self.evals_df["entropy"], label="Entropy")
             ax.set_title("Entropy Over Moves")
             ax.set_xlabel("Move Number")
             ax.set_ylabel("ln(#legal_moves + 1)")
 
-        ax.legend()
+            # If the user has made any custom moves, show them as red dots
+            if self.user_moves_entropy_data:
+                xs, ys = zip(*self.user_moves_entropy_data)
+                ax.scatter(xs, ys, color='red', marker='o', label="User Move Entropy")
+
+            ax.legend()
+
         self.mpl_canvas.draw()
 
 ###############################################################################
@@ -657,13 +632,16 @@ class ChessMoveEvaluator:
 def main():
     """
     Demonstration of how to load multiple games from PGN, process them,
-    and visualize in the combined UI (scrollable + user move input + multi-game).
+    and visualize in the combined UI (scrollable + user move input + multi-game),
+    with distinct entropies for Real, Stockfish, and User moves 
+    (calculated from each move's AFTER position).
+    Also puts a red dot on the Entropy plot for each user move's entropy.
     """
     # Adjust paths to match your environment
     pgn_file_path = "Dataset/lichess_decompressed.pgn"
     stockfish_path = "stockfish/stockfish-windows-x86-64-avx2.exe"
 
-    # Load up to 2 games (or more)
+    # Load up to 5 games
     games = load_pgn_games(pgn_file_path, max_games=5)
     if not games:
         print("No games found in PGN!")
