@@ -3,6 +3,7 @@ import os
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -10,6 +11,8 @@ import chess
 import chess.pgn
 import chess.engine
 import pandas as pd
+import numpy as np
+import seaborn as sns
 
 ###############################################################################
 #                            CHESS / STOCKFISH LOGIC                          #
@@ -140,6 +143,8 @@ def load_piece_image(piece_symbol, square_size):
 
     try:
         img = Image.open(path).convert("RGBA")
+        # Pillow 9.1+ => Image.Resampling.LANCZOS; 
+        # for older Pillow versions, use Image.LANCZOS
         img = img.resize((square_size, square_size), Image.Resampling.LANCZOS)
         return img
     except Exception as e:
@@ -192,9 +197,14 @@ class ScrollableFrame(tk.Frame):
 class ChessMoveEvaluator:
     """
     - Shows 3 rows of boards: Real, Stockfish, User.
-      Each calculates distinct entropies from the AFTER position of that move.
-    - If user calculates a SAN move, we compute the user move's AFTER position entropy 
-      and place a red dot on the Entropy plot.
+    - We also provide additional plots:
+      * Evaluation Over Time
+      * Entropy Trends
+      * Deviation Maps (heatmap of D_Actual-AI, D_Actual-Friend, D_AI-Friend)
+      * Chaos Index (std dev of [G_Actual, G_AI, G_Friend])
+      * Best vs. Played Outcome (Delta_AI, Delta_Friend)
+      * Chess Chaos Art (scatter plot of ChaosIndex vs move #, colored by D_Actual-AI)
+      * Correlation Analysis (heatmap of correlation among [G_Actual, G_AI, G_Friend, entropy, ChaosIndex])
     """
 
     def __init__(self, root, games, stockfish_path):
@@ -282,9 +292,19 @@ class ChessMoveEvaluator:
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
         tk.Label(right_frame, text="Select Plot:", font=("Arial", 14)).grid(row=0, column=0, sticky="w")
+
+        # Add new plot options, including Deviation Maps, Chaos Index, etc.
         self.plot_dropdown = ttk.Combobox(
             right_frame, 
-            values=["Evaluation Over Time", "Entropy Trends"], 
+            values=[
+                "Evaluation Over Time", 
+                "Entropy Trends", 
+                "Deviation Maps",
+                "Chaos Index",
+                "Best vs. Played Outcome",
+                "Chess Chaos Art",
+                "Correlation Analysis"
+            ], 
             state="readonly"
         )
         self.plot_dropdown.grid(row=0, column=1, sticky="w")
@@ -299,10 +319,39 @@ class ChessMoveEvaluator:
         self.load_game(0)
 
     def _evaluate_game_and_build_df(self, game):
+        """
+        For each move:
+          - Evaluate with stockfish => eval_white, eval_black
+          - We'll define G_Actual = eval_white (white's perspective)
+          - We'll define G_AI = -eval_black (also from white's perspective, flipping black's eval)
+          - We'll define G_Friend = 0 (dummy friend evaluation, to be replaced in real usage)
+          - Then compute the requested deviations, chaos index, etc.
+        """
         evals = evaluate_game_with_stockfish(game, self.stockfish_path, depth=15)
         entropies = calculate_entropy_for_game(game)
         df = pd.DataFrame(evals)
         df["entropy"] = entropies
+
+        # Define some "grades" to illustrate new metrics
+        # G_Actual: from white's perspective => eval_white
+        # G_AI: from white's perspective => -eval_black
+        # G_Friend: dummy example => 0
+        df["G_Actual"] = df["eval_white"]
+        df["G_AI"] = -df["eval_black"]
+        df["G_Friend"] = 0.0  # Replace with a second engine or friend logic if desired
+
+        # Deviation Maps
+        df["D_Actual_AI"] = np.abs(df["G_Actual"] - df["G_AI"])
+        df["D_Actual_Friend"] = np.abs(df["G_Actual"] - df["G_Friend"])
+        df["D_AI_Friend"] = np.abs(df["G_AI"] - df["G_Friend"])
+
+        # Chaos Index (std dev of [G_Actual, G_AI, G_Friend])
+        df["ChaosIndex"] = df[["G_Actual","G_AI","G_Friend"]].std(axis=1)
+
+        # Best vs. Played Outcome
+        df["Delta_AI"] = df["G_AI"] - df["G_Actual"]
+        df["Delta_Friend"] = df["G_AI"] - df["G_Friend"]
+
         return df
 
     ###########################################################################
@@ -487,12 +536,9 @@ class ChessMoveEvaluator:
         self.draw_board_on_canvas(self.sf_move_row["after_canvas"], sf_after_board)
 
         # Evaluate Stockfish Move Grade
-        # We treat stockfish's "that move" as sf_best_move
         sf_eval, best_eval2 = self._compare_real_vs_best(sf_before_board, sf_best_move)
-        # We'll attempt to compare it with the real move from the same position, but 
-        # as a simpler approach: we define stockfish grade = (sf_eval - real_eval_sfpos).
-        # For now let's do: "stockfish grade = sf_eval - real_eval"
-        # so if sf_eval is bigger, SF is better
+
+        # We'll define stockfish grade = sf_eval - real_eval_sfpos 
         real_eval_sfpos = 0.0
         if real_move and real_move in sf_before_board.legal_moves:
             tmp2 = sf_before_board.copy()
@@ -581,7 +627,6 @@ class ChessMoveEvaluator:
             entropy_label.config(text=f"{user_entropy:.2f}")
 
             # 5) Add a red dot on the "Entropy Trends" plot
-            # x = self.current_move_index + 1 ( or any other index)
             x_val = self.current_move_index + 1
             self.user_moves_entropy_data.append((x_val, user_entropy))
 
@@ -623,6 +668,52 @@ class ChessMoveEvaluator:
 
             ax.legend()
 
+        elif plot_type == "Deviation Maps":
+            # Heatmap of [D_Actual_AI, D_Actual_Friend, D_AI_Friend]
+            heat_data = self.evals_df[["D_Actual_AI", "D_Actual_Friend", "D_AI_Friend"]]
+            # We transpose so that each of the three columns becomes a row in the heatmap
+            sns.heatmap(heat_data.T, ax=ax, cmap="viridis", annot=True, cbar=True)
+            ax.set_title("Deviation Maps (Absolute Differences)")
+            ax.set_xlabel("Move Index")
+            ax.set_ylabel("Deviation Type")
+
+        elif plot_type == "Chaos Index":
+            ax.plot(self.evals_df.index + 1, self.evals_df["ChaosIndex"], label="ChaosIndex", color='purple')
+            ax.set_title("Chaos Index Over Moves")
+            ax.set_xlabel("Move Number")
+            ax.set_ylabel("Std Dev of [G_Actual, G_AI, G_Friend]")
+            ax.legend()
+
+        elif plot_type == "Best vs. Played Outcome":
+            ax.plot(self.evals_df.index + 1, self.evals_df["Delta_AI"], label="Δ AI = G_AI - G_Actual", color='blue')
+            ax.plot(self.evals_df.index + 1, self.evals_df["Delta_Friend"], label="Δ Friend = G_AI - G_Friend", color='green')
+            ax.set_title("Best vs. Played Outcome")
+            ax.set_xlabel("Move Number")
+            ax.set_ylabel("Difference")
+            ax.legend()
+
+        elif plot_type == "Chess Chaos Art":
+            # Scatter plot: x=move number, y=ChaosIndex, color by D_Actual_AI
+            scatter = ax.scatter(
+                x=self.evals_df.index + 1,
+                y=self.evals_df["ChaosIndex"],
+                c=self.evals_df["D_Actual_AI"],
+                cmap="viridis"
+            )
+            ax.set_title("Chess Chaos Art")
+            ax.set_xlabel("Move Number")
+            ax.set_ylabel("ChaosIndex")
+            cbar = self.figure.colorbar(scatter, ax=ax)
+            cbar.set_label("D_Actual_AI")
+
+        elif plot_type == "Correlation Analysis":
+            # Correlation among [G_Actual, G_AI, G_Friend, entropy, ChaosIndex]
+            corr_cols = ["G_Actual", "G_AI", "G_Friend", "entropy", "ChaosIndex"]
+            corr_df = self.evals_df[corr_cols].corr()
+            sns.heatmap(corr_df, ax=ax, annot=True, cmap="viridis", cbar=True)
+            ax.set_title("Correlation Analysis")
+
+        self.figure.tight_layout()
         self.mpl_canvas.draw()
 
 ###############################################################################
@@ -632,10 +723,13 @@ class ChessMoveEvaluator:
 def main():
     """
     Demonstration of how to load multiple games from PGN, process them,
-    and visualize in the combined UI (scrollable + user move input + multi-game),
-    with distinct entropies for Real, Stockfish, and User moves 
-    (calculated from each move's AFTER position).
-    Also puts a red dot on the Entropy plot for each user move's entropy.
+    and visualize in the combined UI (scrollable + user move input + multi-game).
+    We add new metrics/plots:
+      - Deviation Maps
+      - Chaos Index
+      - Best vs. Played Outcome
+      - Chess Chaos Art
+      - Correlation Analysis
     """
     # Adjust paths to match your environment
     pgn_file_path = "Dataset/lichess_decompressed.pgn"
