@@ -289,7 +289,7 @@ class ChessMoveEvaluator:
         # 4) RIGHT: Plot area
         #######################################################################
         right_frame = tk.Frame(self.root, padx=10, pady=10)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
         tk.Label(right_frame, text="Select Plot:", font=("Arial", 14)).grid(row=0, column=0, sticky="w")
 
@@ -311,9 +311,12 @@ class ChessMoveEvaluator:
         self.plot_dropdown.set("Select Plot")
         self.plot_dropdown.bind("<<ComboboxSelected>>", self.update_plot)
 
-        self.figure = plt.Figure(figsize=(12, 9), dpi=100)
+        self.figure = plt.Figure(figsize=(7, 6), dpi=75)
         self.mpl_canvas = FigureCanvasTkAgg(self.figure, master=right_frame)
-        self.mpl_canvas.get_tk_widget().grid(row=1, column=0, columnspan=2, pady=10)
+        self.mpl_canvas.get_tk_widget().grid(row=1, column=0, columnspan=2, pady=10, sticky="nsew")
+        right_frame.grid_columnconfigure(0, weight=1)
+        right_frame.grid_columnconfigure(1, weight=1)
+        right_frame.grid_rowconfigure(1, weight=1)
 
         # Load the first game
         self.load_game(0)
@@ -758,7 +761,7 @@ def main():
     stockfish_path = "stockfish/stockfish-windows-x86-64-avx2.exe"
 
     # Load up to 5 games
-    games = load_pgn_games(pgn_file_path, max_games=5)
+    games = load_pgn_games(pgn_file_path, max_games=25)
     if not games:
         print("No games found in PGN!")
         return
