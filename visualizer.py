@@ -311,7 +311,7 @@ class ChessMoveEvaluator:
         self.plot_dropdown.set("Select Plot")
         self.plot_dropdown.bind("<<ComboboxSelected>>", self.update_plot)
 
-        self.figure = plt.Figure(figsize=(5, 4), dpi=100)
+        self.figure = plt.Figure(figsize=(12, 9), dpi=100)
         self.mpl_canvas = FigureCanvasTkAgg(self.figure, master=right_frame)
         self.mpl_canvas.get_tk_widget().grid(row=1, column=0, columnspan=2, pady=10)
 
@@ -319,40 +319,33 @@ class ChessMoveEvaluator:
         self.load_game(0)
 
     def _evaluate_game_and_build_df(self, game):
-        """
-        For each move:
-          - Evaluate with stockfish => eval_white, eval_black
-          - We'll define G_Actual = eval_white (white's perspective)
-          - We'll define G_AI = -eval_black (also from white's perspective, flipping black's eval)
-          - We'll define G_Friend = 0 (dummy friend evaluation, to be replaced in real usage)
-          - Then compute the requested deviations, chaos index, etc.
-        """
         evals = evaluate_game_with_stockfish(game, self.stockfish_path, depth=15)
         entropies = calculate_entropy_for_game(game)
         df = pd.DataFrame(evals)
         df["entropy"] = entropies
 
-        # Define some "grades" to illustrate new metrics
         # G_Actual: from white's perspective => eval_white
-        # G_AI: from white's perspective => -eval_black
-        # G_Friend: dummy example => 0
         df["G_Actual"] = df["eval_white"]
+        # G_AI: from white's perspective => -eval_black
         df["G_AI"] = -df["eval_black"]
-        df["G_Friend"] = 0.0  # Replace with a second engine or friend logic if desired
+        
+        # Initialize G_Friend as NaN (no user move data yet)
+        df["G_Friend"] = np.nan
 
-        # Deviation Maps
+        # Deviation Maps (these will be updated once we have G_Friend for each row)
         df["D_Actual_AI"] = np.abs(df["G_Actual"] - df["G_AI"])
-        df["D_Actual_Friend"] = np.abs(df["G_Actual"] - df["G_Friend"])
-        df["D_AI_Friend"] = np.abs(df["G_AI"] - df["G_Friend"])
+        df["D_Actual_Friend"] = np.nan
+        df["D_AI_Friend"] = np.nan
 
-        # Chaos Index (std dev of [G_Actual, G_AI, G_Friend])
-        df["ChaosIndex"] = df[["G_Actual","G_AI","G_Friend"]].std(axis=1)
+        # Chaos Index
+        df["ChaosIndex"] = np.nan
 
         # Best vs. Played Outcome
         df["Delta_AI"] = df["G_AI"] - df["G_Actual"]
-        df["Delta_Friend"] = df["G_AI"] - df["G_Friend"]
+        df["Delta_Friend"] = np.nan
 
         return df
+
 
     ###########################################################################
     #                            GAME LOADING                                  #
@@ -616,7 +609,8 @@ class ChessMoveEvaluator:
             # 2) Draw the after board
             self.draw_board_on_canvas(after_canvas, user_after)
 
-            # 3) Evaluate user grade
+            # 3) Evaluate user grade (white eval of the resulting position),
+            #    compare to the best move, etc.
             move_eval, best_eval = self._compare_real_vs_best(self.user_board, user_move)
             user_grade = move_eval - best_eval
 
@@ -626,17 +620,40 @@ class ChessMoveEvaluator:
             grade_label.config(text=f"{user_grade:.2f}")
             entropy_label.config(text=f"{user_entropy:.2f}")
 
-            # 5) Add a red dot on the "Entropy Trends" plot
+            # 5) Add a red dot on the "Entropy Trends" plot (purely for visualization)
             x_val = self.current_move_index + 1
             self.user_moves_entropy_data.append((x_val, user_entropy))
 
-            # Force a re-plot if "Entropy Trends" is selected
+            # 6) IMPORTANT: Store this user evaluation in the DataFrame
+            #    and recalc the dependent columns for the current row (self.current_move_index).
+            idx = self.current_move_index
+            
+            # The user’s evaluation from White’s perspective is "move_eval"
+            self.evals_df.at[idx, "G_Friend"] = move_eval
+            
+            # Recalculate deviations with the new G_Friend
+            self.evals_df.at[idx, "D_Actual_Friend"] = abs(self.evals_df.at[idx, "G_Actual"] - move_eval)
+            self.evals_df.at[idx, "D_AI_Friend"]     = abs(self.evals_df.at[idx, "G_AI"]     - move_eval)
+
+            # Chaos Index (std dev of [G_Actual, G_AI, G_Friend])
+            vals = [
+                self.evals_df.at[idx, "G_Actual"],
+                self.evals_df.at[idx, "G_AI"],
+                move_eval
+            ]
+            self.evals_df.at[idx, "ChaosIndex"] = np.std(vals)
+
+            # Best vs. Played Outcome from the user’s perspective
+            self.evals_df.at[idx, "Delta_Friend"] = self.evals_df.at[idx, "G_AI"] - move_eval
+
+            # 7) Re-plot if "Entropy Trends" or "Correlation Analysis" is selected, etc.
             if self.plot_dropdown.get() != "Select Plot":
                 self.update_plot(None)
 
         except Exception as e:
             notation_entry.delete(0, tk.END)
             notation_entry.insert(0, "Invalid move")
+
 
     ###########################################################################
     #                          PLOTTING METHODS                               #
@@ -709,9 +726,14 @@ class ChessMoveEvaluator:
         elif plot_type == "Correlation Analysis":
             # Correlation among [G_Actual, G_AI, G_Friend, entropy, ChaosIndex]
             corr_cols = ["G_Actual", "G_AI", "G_Friend", "entropy", "ChaosIndex"]
-            corr_df = self.evals_df[corr_cols].corr()
-            sns.heatmap(corr_df, ax=ax, annot=True, cmap="viridis", cbar=True)
-            ax.set_title("Correlation Analysis")
+            corr_df = self.evals_df[corr_cols].dropna()
+            if corr_df.empty:
+                ax.text(0.5, 0.5, "No user moves entered yet\n(or no valid data).",
+                ha='center', va='center', fontsize=12)
+            else:
+                corr_matrix = corr_df.corr()
+                sns.heatmap(corr_matrix, ax=ax, annot=True, cmap="viridis", cbar=True)
+                ax.set_title("Correlation Analysis")
 
         self.figure.tight_layout()
         self.mpl_canvas.draw()
